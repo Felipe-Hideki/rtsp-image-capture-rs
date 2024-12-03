@@ -1,0 +1,15 @@
+[package]
+name = "cap-rust-ffmpeg"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+async-trait = "0.1.83"
+base64 = "0.22.1"
+futures = "0.3.31"
+onvif = { git = "https://github.com/lumeohq/onvif-rs" }
+openh264 = "0.6.3"
+retina = "0.4.10"
+tokio = { version = "1.41.1", features = ["full"] }
+turbojpeg = "1.1.1"
+url = "2.5.4"
