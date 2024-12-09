@@ -25,7 +25,7 @@ pub struct OnvifHelper {
 
 impl OnvifHelper {
     pub fn new(ip_address: &str) -> Result<Self, OnvifError> {
-        let onvif_url = Url::parse(&("http://".to_string() + ip_address + ":" + ONVIF_PORT))
+        let onvif_url = Url::parse(&format!("http://{}:{}", ip_address, ONVIF_PORT))
             .map_err(|_| OnvifError::UrlParseError)?;
         Ok(Self {
             onvif_url,

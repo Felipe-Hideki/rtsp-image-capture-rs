@@ -1,24 +1,16 @@
 use std::{
     env::args,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant},
 };
 
 mod camera;
 mod decoders;
 
-use camera::onvif::{services, OnvifHelper};
-use decoders::H264Decoder;
-use retina::{
-    self,
-    client::{
-        InitialSequenceNumberPolicy, InitialTimestampPolicy, PlayOptions, Session, SessionOptions,
-        SetupOptions, TcpTransportOptions, Transport,
-    },
-    codec::CodecItem,
+use camera::{
+    onvif::{services, OnvifHelper},
+    rtsp_session::{SessionError, SessionWrapper},
 };
-use url::Url;
-
-use futures::StreamExt;
+use decoders::{AVCCDecoder, Chain, H264RGBDecoder};
 
 #[tokio::main]
 async fn main() {
@@ -36,118 +28,73 @@ async fn main() {
     let media_cli = onvif_client
         .get_service::<services::MediaClient>()
         .await
-        .expect("Couldn't fetch media client")
-        .with_first_profile()
-        .await
-        .expect("Failed to fetch profile token");
+        .expect("Couldn't fetch media client");
 
-    let mut session = Session::describe(
-        Url::parse(
-            &("rtsp://".to_string()
-                + &ip
-                + &format!(":554/user={}&password={}&channel=2", user, password)),
-        )
-        .expect("Failed to parse url"),
-        SessionOptions::default(),
-    )
-    .await
-    .expect("Failed to create Session");
+    let (res, media_cli) = {
+        let mut profiles = media_cli
+            .get_profiles()
+            .await
+            .expect("Failed to get media client");
 
-    let video_stream = session
-        .streams()
-        .iter()
-        .position(|s| s.media() == "video")
-        .expect("No video stream available");
-
-    println!("Setting up session");
-    session
-        .setup(
-            video_stream,
-            SetupOptions::default().transport(Transport::Tcp(TcpTransportOptions::default())),
-        )
-        .await
-        .expect("Failed to setup session");
-
-    println!("Playing and demuxing session");
-    println!("Using stream {:?}", session.streams()[video_stream]);
-
-    let mut session = session
-        .play(
-            PlayOptions::default()
-                .initial_seq(InitialSequenceNumberPolicy::Respect)
-                .initial_timestamp(InitialTimestampPolicy::Require),
-        )
-        .await
-        .expect("Failed to start session")
-        .demuxed()
-        .expect("Couldn't demux session");
-
-    let mut last_saved = SystemTime::now();
-
-    let mut decoder = H264Decoder::new(true).unwrap();
-
-    let mut i_frames_indices = Vec::new();
-    let mut i = 0;
-    let mut frame_buf = vec![0u8; 1920 * 1080 * 3];
-
-    println!("loop start");
-    let mut sent = false;
-    loop {
-        let pkt = session.next().await;
-        if pkt.is_none() {
-            eprintln!("{:?}", pkt);
-            continue;
+        if profiles.len() == 0 {
+            panic!("Empty profiles list");
         }
-        match pkt.unwrap().unwrap() {
-            CodecItem::VideoFrame(f) => {
-                i += 1;
-                println!(
-                    "Frame len {} -> disposable? {}",
-                    f.data().len(),
-                    f.is_random_access_point()
-                );
-                if f.is_random_access_point() {
-                    i_frames_indices.push(i);
-                    println!("I-Frame indices -> {:?}", i_frames_indices);
-                }
-                if last_saved.elapsed().unwrap() > Duration::from_millis(5000) {
-                    if !f.is_random_access_point() {
-                        if !sent {
-                            media_cli.sync_iframe().await.unwrap();
-                            sent = true
-                        }
-                    } else {
-                        let annex_b = decoder.decode_to_annex_b(f.data()).unwrap().to_vec();
-                        let yuv_image = decoder.decode(&annex_b).unwrap().unwrap();
-                        yuv_image.write_rgb8(&mut frame_buf);
-                        let rgb_image = turbojpeg::Image {
-                            pixels: &frame_buf as &[u8],
-                            width: 1920,
-                            height: 1080,
-                            pitch: 1920 * 3,
-                            format: turbojpeg::PixelFormat::RGB,
-                        };
-                        let compressed =
-                            turbojpeg::compress(rgb_image, 90, turbojpeg::Subsamp::Sub2x2)
-                                .expect("Failed to compress image");
-                        std::fs::write("t.jpg", compressed).expect("Failed to write image");
-                        last_saved = SystemTime::now();
-                        sent = false;
-                    }
-                }
-                //frames.push(annex_b);
+
+        let first_profile = profiles.remove(0);
+        let token = first_profile.token;
+        if let Some(conf) = first_profile.video_encoder_configuration {
+            (
+                (
+                    conf.resolution.width as usize,
+                    conf.resolution.height as usize,
+                ),
+                media_cli.with_token(token),
+            )
+        } else {
+            panic!("Video encoder configuration is missing");
+        }
+    };
+
+    println!("Fetching stream url...");
+    let stream_url = media_cli
+        .get_stream_uri()
+        .await
+        .expect("Stream url unavailable");
+
+    let decoder = Box::new(
+        AVCCDecoder::new()
+            .chain(H264RGBDecoder::new(true, res).expect("Failed to create h264 decoder")),
+    );
+
+    let mut session = SessionWrapper::new(stream_url, decoder).start().await;
+    let instance = session
+        .request_instance()
+        .await
+        .expect("Couldn't fetch session instance");
+
+    loop {
+        let b = Instant::now();
+        let _abc = match instance.request_image().await {
+            Ok(f) => Ok(f),
+            Err(SessionError::OldFrame) => {
+                media_cli
+                    .sync_iframe()
+                    .await
+                    .expect("Failed to sync iframes");
+                Err(SessionError::OldFrame)
             }
-            CodecItem::Rtcp(rtcp) => {
-                if let (Some(t), Some(Ok(Some(sr)))) = (
-                    rtcp.rtp_timestamp(),
-                    rtcp.pkts()
-                        .next()
-                        .map(retina::rtcp::PacketRef::as_sender_report),
-                ) {
-                    println!("{}: SR ts={}", t, sr.ntp_timestamp());
-                }
+            Err(e) => {
+                println!("Unexpected Error => {:?}", e);
+                Err(e)
             }
-            _ => continue,
+        };
+        println!(
+            "Captured -> {:?} in {} ms",
+            _abc.as_ref().err(),
+            Instant::now().duration_since(b).as_millis()
+        );
+        if !_abc.is_err() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
 }

@@ -1,13 +1,13 @@
 use onvif::{
     schema::{
         self,
-        onvif::{Profile, ReferenceToken},
+        onvif::{Profile, ReferenceToken, StreamType, Transport, TransportProtocol},
     },
     soap::client::{Client, ClientBuilder, Credentials},
 };
 use url::Url;
 
-use super::{OnvifError, OnvifHelper};
+use super::OnvifError;
 
 pub trait ClientWrapper {
     fn connect(endpoint: &Url, auth: Option<Credentials>) -> Self;
@@ -48,7 +48,7 @@ impl MediaClient {
     //     self.profile_token = Some(ReferenceToken { 0: token.into() })
     // }
 
-    pub async fn with_first_profile(self) -> Result<Self, OnvifError> {
+    pub async fn with_first_profile_token(self) -> Result<Self, OnvifError> {
         let mut profiles = self.get_profiles().await?;
 
         if profiles.len() == 0 {
@@ -70,18 +70,45 @@ impl MediaClient {
     }
 
     pub async fn sync_iframe(&self) -> Result<(), OnvifError> {
-        if self.profile_token.is_none() {
-            return Err(OnvifError::UnsetToken);
-        }
         let req = schema::media::SetSynchronizationPoint {
             profile_token: ReferenceToken {
-                0: self.profile_token.as_ref().unwrap().0.to_string(),
+                0: self
+                    .profile_token
+                    .as_ref()
+                    .ok_or(OnvifError::UnsetToken)?
+                    .0
+                    .to_string(),
             },
         };
         schema::media::set_synchronization_point(&self.inner, &req)
             .await
             .map_err(|e| OnvifError::TransportError(e))
             .map(|_| ())
+    }
+
+    pub async fn get_stream_uri(&self) -> Result<Url, OnvifError> {
+        let req = schema::media::GetStreamUri {
+            stream_setup: schema::onvif::StreamSetup {
+                stream: StreamType::RtpUnicast,
+                transport: Transport {
+                    protocol: TransportProtocol::Rtsp,
+                    tunnel: Vec::new(),
+                },
+            },
+            profile_token: ReferenceToken {
+                0: self
+                    .profile_token
+                    .as_ref()
+                    .ok_or(OnvifError::UnsetToken)?
+                    .0
+                    .to_string(),
+            },
+        };
+
+        schema::media::get_stream_uri(&self.inner, &req)
+            .await
+            .map_err(|e| OnvifError::TransportError(e))
+            .map(|u| Url::parse(&u.media_uri.uri).map_err(|_| OnvifError::UrlParseError))?
     }
 }
 
