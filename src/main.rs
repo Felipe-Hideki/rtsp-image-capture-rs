@@ -34,7 +34,7 @@ async fn main() {
         let mut profiles = media_cli
             .get_profiles()
             .await
-            .expect("Failed to get media client");
+            .expect("Failed to get profiles");
 
         if profiles.len() == 0 {
             panic!("Empty profiles list");
