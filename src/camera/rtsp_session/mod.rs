@@ -3,18 +3,18 @@ pub mod utils;
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
-use openh264::formats::YUVSource;
 use retina::{
     client::{
-        InitialSequenceNumberPolicy, InitialTimestampPolicy, PlayOptions, Session, SessionOptions,
-        SetupOptions, TcpTransportOptions, Transport,
+        Demuxed, InitialSequenceNumberPolicy, InitialTimestampPolicy, PlayOptions, Session,
+        SessionOptions, SetupOptions, TcpTransportOptions, Transport,
     },
     codec::{CodecItem, VideoFrame},
+    Error,
 };
 use tokio::{sync, task::JoinHandle};
 use url::Url;
 
-use crate::decoders::{DecoderError, H264RGBDecoder, ImageDecoder};
+use crate::decoders::{DecoderError, ImageDecoder};
 
 // TODO: Maybe I should split these into different sectors
 #[derive(Debug)]
@@ -28,6 +28,11 @@ pub enum SessionError {
     DecodingError(DecoderError),
 
     OldFrame,
+    FailedToDescribeSession(Error),
+    NoVideoStreamFound,
+    FailedToSetupStream(Error),
+    FailedToPlayStream(Error),
+    FailedToDemuxStream(Error),
 }
 
 pub struct SessionInstance {
@@ -115,9 +120,9 @@ impl FrameHolder {
                 .map(|v| v.as_slice())
                 .ok_or(DecoderError::NoImageDecoded);
         }
-        let decoded = decoder.decode(self.inner_h264.to_vec())?;
+        let decoded = decoder.decode(&self.inner_h264)?;
 
-        self.decoded_frame = Some(decoded);
+        self.decoded_frame = Some(decoded.to_vec());
         self.decoded_frame
             .as_ref()
             .map(|v| v.as_slice())
@@ -163,50 +168,45 @@ impl SessionWrapper {
     pub async fn start(self) -> SessionInstanceManager {
         let (subscriber_requester_tx, subscriber_requester_rx) = sync::mpsc::channel(24);
         let handle = tokio::spawn(self.session_loop(subscriber_requester_rx));
-        SessionInstanceManager {
-            subscriber_request_tx: subscriber_requester_tx,
-            task_handle: handle,
-        }
+        SessionInstanceManager::new(subscriber_requester_tx, handle)
     }
 
-    fn is_iframe(f: &VideoFrame) -> bool {
-        f.is_random_access_point()
-    }
-
-    async fn session_loop(mut self, mut data_requester_rx: RequesterRx<Option<SessionInstance>>) {
-        let mut session = Session::describe(self.camera_url, SessionOptions::default())
+    async fn start_session(&self) -> Result<Demuxed, SessionError> {
+        let mut session = Session::describe(self.camera_url.clone(), SessionOptions::default())
             .await
-            .expect("Failed to create Session");
+            .map_err(|e| SessionError::FailedToDescribeSession(e))?;
 
         let video_stream = session
             .streams()
             .iter()
             .position(|s| s.media() == "video")
-            .expect("No video stream available");
+            .ok_or(SessionError::NoVideoStreamFound)?;
 
-        println!("Setting up session");
         session
             .setup(
                 video_stream,
                 SetupOptions::default().transport(Transport::Tcp(TcpTransportOptions::default())),
             )
             .await
-            .expect("Failed to setup session");
+            .map_err(|e| SessionError::FailedToSetupStream(e))?;
 
-        println!("Playing and demuxing session");
-        println!("Using stream {:?}", session.streams()[video_stream]);
-
-        let mut session = session
+        session
             .play(
                 PlayOptions::default()
                     .initial_seq(InitialSequenceNumberPolicy::Respect)
                     .initial_timestamp(InitialTimestampPolicy::Require),
             )
             .await
-            .expect("Failed to start session")
+            .map_err(|e| SessionError::FailedToPlayStream(e))?
             .demuxed()
-            .expect("Couldn't demux session");
+            .map_err(|e| SessionError::FailedToDemuxStream(e))
+    }
 
+    async fn session_loop(mut self, mut data_requester_rx: RequesterRx<Option<SessionInstance>>) {
+        let mut session = self
+            .start_session()
+            .await
+            .expect("Failed to start session stream");
         type DataRequester = sync::oneshot::Sender<Result<Vec<u8>, SessionError>>;
 
         let (data_req_tx, mut data_req_rx) = sync::mpsc::channel::<DataRequester>(32);
@@ -215,11 +215,21 @@ impl SessionWrapper {
                 Some(sender) = data_req_rx.recv(), if !self.frame_holder.is_empty() => {
                     if self.frame_holder.elapsed() > Duration::from_millis(500) {
                         self.frame_holder = FrameHolder::empty();
-                        sender.send(Err(SessionError::OldFrame));
+                        match sender.send(Err(SessionError::OldFrame)) {
+                            Ok(_) => {},
+                            Err(e) => {
+                                println!("Channel was closed by requester: {:?}", e)
+                            }
+                        }
                         continue;
                     }
-
-                    sender.send(self.frame_holder.decode(&mut *self.decoder).map(|v| v.to_vec()).map_err(|e| SessionError::DecodingError(e)));
+                    let f = self.frame_holder.decode(&mut *self.decoder).map_or_else(|e| Err(SessionError::DecodingError(e)), |v| Ok(v.to_vec()));
+                    match sender.send(f) {
+                        Ok(_) => {},
+                        Err(e) => {
+                            println!("Channel was closed by requester: {:?}", e)
+                        }
+                    }
 
                 },
                 Some(req) = data_requester_rx.recv() => {
@@ -233,7 +243,7 @@ impl SessionWrapper {
                 Some(Ok(packet)) = session.next() => {
                     match packet {
                         CodecItem::VideoFrame(f) => {
-                            if !Self::is_iframe(&f) {
+                            if !f.is_random_access_point() {
                                 continue;
                             }
                             self.frame_holder = FrameHolder::new(f.into_data())
