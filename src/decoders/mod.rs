@@ -1,6 +1,7 @@
+use std::time::Instant;
+
 use openh264::{
-    decoder::{DecodedYUV, Decoder, DecoderConfig},
-    formats::YUVSource,
+    decoder::{Decoder, DecoderConfig},
     OpenH264API,
 };
 
@@ -16,7 +17,7 @@ pub enum DecoderError {
 // TODO: Cant decide between caching the buffer into each decoder, or just create the vec in
 // between decoders
 pub trait ImageDecoder: Sync + Send {
-    fn decode(&mut self, data: Vec<u8>) -> Result<Vec<u8>, DecoderError>;
+    fn decode(&mut self, data: &[u8]) -> Result<&[u8], DecoderError>;
 }
 
 pub trait Chain<T: 'static + ImageDecoder> {
@@ -34,7 +35,8 @@ impl AVCCDecoder {
 }
 
 impl ImageDecoder for AVCCDecoder {
-    fn decode(&mut self, data: Vec<u8>) -> Result<Vec<u8>, DecoderError> {
+    fn decode(&mut self, data: &[u8]) -> Result<&[u8], DecoderError> {
+        let b = Instant::now();
         self.buf.clear();
         let mut index = 0;
 
@@ -66,7 +68,11 @@ impl ImageDecoder for AVCCDecoder {
             self.buf.extend_from_slice(nal_unit);
         }
 
-        Ok(self.buf.to_vec())
+        println!(
+            "Avcc decoding time -> {}",
+            Instant::now().duration_since(b).as_millis()
+        );
+        Ok(&self.buf)
     }
 }
 
@@ -97,15 +103,27 @@ impl H264RGBDecoder {
 }
 
 impl ImageDecoder for H264RGBDecoder {
-    fn decode(&mut self, data: Vec<u8>) -> Result<Vec<u8>, DecoderError> {
-        self.inner
+    fn decode(&mut self, data: &[u8]) -> Result<&[u8], DecoderError> {
+        let bb = Instant::now();
+        let a = self
+            .inner
             .decode(&data)
             .map_err(|e| DecoderError::DecodeFail(e))
             .map(|o| o.ok_or(DecoderError::NoImageDecoded))?
             .map(|i| {
+                let b = Instant::now();
                 i.write_rgb8(&mut self.buf);
-                self.buf.to_vec()
-            })
+                println!(
+                    "Took {} ms to write into rgb",
+                    Instant::now().duration_since(b).as_millis()
+                );
+                self.buf.as_slice()
+            });
+        println!(
+            "Took {} ms to decode image",
+            Instant::now().duration_since(bb).as_millis()
+        );
+        a
     }
 }
 
@@ -124,8 +142,11 @@ pub struct ChainedDecoder {
 }
 
 impl ImageDecoder for ChainedDecoder {
-    fn decode(&mut self, data: Vec<u8>) -> Result<Vec<u8>, DecoderError> {
-        self.b.decode(self.a.decode(data)?)
+    fn decode(&mut self, data: &[u8]) -> Result<&[u8], DecoderError> {
+        let b = Instant::now();
+        let res = self.b.decode(self.a.decode(data)?);
+        println!("Total decoding time => {}", b.elapsed().as_millis());
+        res
     }
 }
 
