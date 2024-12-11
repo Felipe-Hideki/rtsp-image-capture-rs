@@ -1,12 +1,23 @@
 [package]
-name = "cap-rust-ffmpeg"
+name = "rtsp-image-capture"
 version = "0.1.0"
 edition = "2021"
+
+[lib]
+name = "rtsp_lib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rtsp_bin"
+path = "src/main.rs"
 
 [dependencies]
 async-trait = "0.1.83"
 base64 = "0.22.1"
 futures = "0.3.31"
+ipc = { git = "https://github.com/Felipe-Hideki/ipc.git", branch = "1.2.0", features = [
+  "async",
+] }
 onvif = { git = "https://github.com/Felipe-Hideki/onvif-rs" }
 openh264 = "0.6.3"
 retina = "0.4.10"
