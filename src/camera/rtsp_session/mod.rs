@@ -1,6 +1,9 @@
 pub mod utils;
 
-use std::time::{Duration, Instant};
+use std::{
+    fmt::Debug,
+    time::{Duration, Instant},
+};
 
 use futures::StreamExt;
 use retina::{
@@ -35,19 +38,24 @@ pub enum SessionError {
     FailedToDemuxStream(Error),
 }
 
+type FrameRequester = sync::mpsc::Sender<FrameRequest>;
 pub struct SessionInstance {
-    data_req_tx: RequesterTx<Result<Vec<u8>, SessionError>>,
+    data_req_tx: FrameRequester,
 }
 
 impl SessionInstance {
-    fn new(data_req_tx: RequesterTx<Result<Vec<u8>, SessionError>>) -> Self {
+    fn new(data_req_tx: FrameRequester) -> Self {
         Self { data_req_tx }
     }
 
-    pub async fn request_image(&self) -> Result<Vec<u8>, SessionError> {
+    pub async fn request_image(
+        &self,
+        mut req: FrameRequest,
+    ) -> Result<FrameResponse, SessionError> {
         let (req_tx, req_rx) = sync::oneshot::channel();
+        req.with_tx(req_tx);
         self.data_req_tx
-            .send(req_tx)
+            .send(req)
             .await
             .map_err(|_| SessionError::BrokenPipeline)?;
 
@@ -97,71 +105,141 @@ impl Drop for SessionInstanceManager {
     }
 }
 
+#[derive(Clone)]
 struct FrameHolder {
-    inner_h264: Vec<u8>,
+    raw_frames: Vec<Vec<u8>>,
     ts: Instant,
-    decoded_frame: Option<Vec<u8>>,
+    decoded_frames: Vec<Vec<u8>>,
 }
 
 impl FrameHolder {
-    fn new(h264: Vec<u8>) -> Self {
+    fn new() -> Self {
         Self {
-            inner_h264: h264,
+            raw_frames: Vec::new(),
             ts: Instant::now(),
-            decoded_frame: None,
+            decoded_frames: Vec::new(),
         }
     }
 
-    fn decode(&mut self, decoder: &mut dyn ImageDecoder) -> Result<&[u8], DecoderError> {
-        if self.decoded_frame.is_some() {
+    fn decode(
+        &mut self,
+        decoder: &mut dyn ImageDecoder,
+        index: usize,
+    ) -> Result<&[u8], DecoderError> {
+        if index >= self.raw_frames.len() {
+            return Err(DecoderError::IndexOutOfBounds);
+        }
+        if self.decoded_frames.len() < index {
+            self.decode(decoder, index - 1)?;
+        }
+        if index < self.decoded_frames.len() {
             return self
-                .decoded_frame
-                .as_ref()
+                .decoded_frames
+                .get(index)
                 .map(|v| v.as_slice())
                 .ok_or(DecoderError::NoImageDecoded);
         }
-        let decoded = decoder.decode(&self.inner_h264)?;
+        let decoded = decoder.decode(&self.raw_frames[index])?;
 
-        self.decoded_frame = Some(decoded.to_vec());
-        self.decoded_frame
-            .as_ref()
+        self.decoded_frames.push(decoded.to_vec());
+        self.decoded_frames
+            .get(index)
             .map(|v| v.as_slice())
             .ok_or(DecoderError::NoImageDecoded)
     }
 
-    fn empty() -> Self {
-        Self {
-            inner_h264: vec![],
-            ts: Instant::now(),
-            decoded_frame: Some(vec![]),
-        }
+    fn set_iframe(&mut self, iframe: Vec<u8>) {
+        self.raw_frames.clear();
+        self.decoded_frames.clear();
+        self.ts = Instant::now();
+
+        self.raw_frames.push(iframe);
+    }
+
+    fn add_image(&mut self, data: Vec<u8>) {
+        self.raw_frames.push(data)
+    }
+
+    fn drain(&mut self) {
+        self.raw_frames.clear();
+        self.decoded_frames.clear();
+        self.ts = Instant::now()
     }
 
     fn is_empty(&self) -> bool {
-        if let Some(v) = self.decoded_frame.as_ref() {
-            v.is_empty()
-        } else {
-            false
-        }
+        self.raw_frames.is_empty()
+    }
+
+    fn raw_len(&self) -> usize {
+        self.raw_frames.len()
     }
 
     fn elapsed(&self) -> Duration {
         Instant::now().duration_since(self.ts)
     }
+    fn get_ts(&self) -> Instant {
+        self.ts
+    }
+}
+
+type ReturnTx = sync::oneshot::Sender<Result<FrameResponse, SessionError>>;
+
+pub struct FrameRequest {
+    return_rx: Option<ReturnTx>,
+    buf_index: usize,
+}
+
+impl FrameRequest {
+    pub fn new(index: usize) -> Self {
+        Self {
+            return_rx: None,
+            buf_index: index,
+        }
+    }
+
+    fn with_tx(&mut self, rx: ReturnTx) {
+        self.return_rx = Some(rx)
+    }
+}
+
+impl Debug for FrameRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("FrameRequest {\n")?;
+        f.write_str(format!("    buf_index: {}\n", self.buf_index).as_str())?;
+        f.write_str("}\n")?;
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct FrameResponse {
+    frame: Vec<u8>,
+    i_frame_ts: Instant,
+}
+
+pub struct SessionConfig {
+    pub buf_size: usize,
+    pub frame_lifetime: Duration,
 }
 
 pub struct SessionWrapper {
     camera_url: Url,
     frame_holder: FrameHolder,
     decoder: Box<dyn ImageDecoder + Sync + Send>,
+    cfg: SessionConfig,
 }
 
 impl SessionWrapper {
-    pub fn new(camera_url: Url, decoder: Box<dyn ImageDecoder + Sync + Send>) -> Self {
+    pub fn new(
+        camera_url: Url,
+        decoder: Box<dyn ImageDecoder + Sync + Send>,
+        cfg: SessionConfig,
+    ) -> Self {
         Self {
             camera_url,
-            frame_holder: FrameHolder::empty(),
+            frame_holder: FrameHolder::new(),
             decoder,
+            cfg,
         }
     }
 
@@ -207,14 +285,17 @@ impl SessionWrapper {
             .start_session()
             .await
             .expect("Failed to start session stream");
-        type DataRequester = sync::oneshot::Sender<Result<Vec<u8>, SessionError>>;
 
-        let (data_req_tx, mut data_req_rx) = sync::mpsc::channel::<DataRequester>(32);
+        let (data_req_tx, mut data_req_rx) = sync::mpsc::channel::<FrameRequest>(32);
         loop {
             tokio::select! {
-                Some(sender) = data_req_rx.recv(), if !self.frame_holder.is_empty() => {
-                    if self.frame_holder.elapsed() > Duration::from_millis(500) {
-                        self.frame_holder = FrameHolder::empty();
+                Some(mut req) = data_req_rx.recv(), if !self.frame_holder.is_empty() => {
+                    let sender = match req.return_rx.take() {
+                        Some(s) => s,
+                        None => continue
+                    };
+                    if self.frame_holder.elapsed() > self.cfg.frame_lifetime {
+                        self.frame_holder.drain();
                         match sender.send(Err(SessionError::OldFrame)) {
                             Ok(_) => {},
                             Err(e) => {
@@ -223,8 +304,11 @@ impl SessionWrapper {
                         }
                         continue;
                     }
-                    let f = self.frame_holder.decode(&mut *self.decoder).map_or_else(|e| Err(SessionError::DecodingError(e)), |v| Ok(v.to_vec()));
-                    match sender.send(f) {
+                    let f = self.frame_holder.decode(&mut *self.decoder, req.buf_index)
+                        .map_or_else(|e| Err(SessionError::DecodingError(e)), |v| Ok(v.to_vec()));
+
+                    let resp = f.map(|x| FrameResponse {frame: x, i_frame_ts: self.frame_holder.get_ts()});
+                    match sender.send(resp) {
                         Ok(_) => {},
                         Err(e) => {
                             println!("Channel was closed by requester: {:?}", e)
@@ -243,10 +327,14 @@ impl SessionWrapper {
                 Some(Ok(packet)) = session.next() => {
                     match packet {
                         CodecItem::VideoFrame(f) => {
-                            if !f.is_random_access_point() {
+                            if f.is_random_access_point() {
+                                self.frame_holder.set_iframe(f.into_data());
                                 continue;
                             }
-                            self.frame_holder = FrameHolder::new(f.into_data())
+                            if self.frame_holder.raw_len() >= self.cfg.buf_size {
+                                continue;
+                            }
+                            self.frame_holder.add_image(f.into_data());
                         }
                         _ => {}
                     }

@@ -3,14 +3,14 @@ use std::{
     time::{Duration, Instant},
 };
 
-mod camera;
-mod decoders;
-
-use camera::{
-    onvif::{services, OnvifHelper},
-    rtsp_session::{SessionError, SessionWrapper},
+use rtsp_lib::decoders::{AVCCDecoder, Chain, H264RGBDecoder};
+use rtsp_lib::{
+    camera::{
+        onvif::{services, OnvifHelper},
+        rtsp_session::{FrameRequest, SessionConfig, SessionError, SessionWrapper},
+    },
+    decoders::DecoderError,
 };
-use decoders::{AVCCDecoder, Chain, H264RGBDecoder};
 
 #[tokio::main]
 async fn main() {
@@ -66,22 +66,41 @@ async fn main() {
             .chain(H264RGBDecoder::new(true, res).expect("Failed to create h264 decoder")),
     );
 
-    let mut session = SessionWrapper::new(stream_url, decoder).start().await;
+    let cfg = SessionConfig {
+        buf_size: 3,
+        frame_lifetime: Duration::from_millis(300),
+    };
+
+    let mut session = SessionWrapper::new(stream_url, decoder, cfg).start().await;
     let instance = session
         .request_instance()
         .await
         .expect("Couldn't fetch session instance");
 
+    let mut i = 0;
     loop {
         let b = Instant::now();
-        let _abc = match instance.request_image().await {
-            Ok(f) => Ok(f),
+        let req = FrameRequest::new(i);
+        let _abc = match instance.request_image(req).await {
+            Ok(f) => {
+                i += 1;
+                Ok(f)
+            }
             Err(SessionError::OldFrame) => {
+                i = 0;
                 media_cli
                     .sync_iframe()
                     .await
                     .expect("Failed to sync iframes");
                 Err(SessionError::OldFrame)
+            }
+            Err(SessionError::BrokenPipeline) => {
+                panic!()
+            }
+            Err(SessionError::DecodingError(DecoderError::IndexOutOfBounds)) => {
+                println!("Waiting for decode!");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
             }
             Err(e) => {
                 println!("Unexpected Error => {:?}", e);
