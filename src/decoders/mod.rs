@@ -2,6 +2,7 @@ use std::time::Instant;
 
 use openh264::{
     decoder::{Decoder, DecoderConfig},
+    formats::YUVSource,
     OpenH264API,
 };
 
@@ -113,6 +114,70 @@ impl ImageDecoder for H264RGBDecoder {
             .map(|i| {
                 let b = Instant::now();
                 i.write_rgb8(&mut self.buf);
+                println!(
+                    "Took {} ms to write into rgb",
+                    Instant::now().duration_since(b).as_millis()
+                );
+                self.buf.as_slice()
+            });
+        println!(
+            "Took {} ms to decode image",
+            Instant::now().duration_since(bb).as_millis()
+        );
+        a
+    }
+}
+pub struct H264BGRDecoder {
+    inner: Decoder,
+    buf: Vec<u8>,
+}
+
+impl H264BGRDecoder {
+    pub fn new(dbg: bool, image_size: (usize, usize)) -> Result<Self, DecoderError> {
+        let decoder =
+            Decoder::with_api_config(OpenH264API::from_source(), DecoderConfig::new().debug(dbg))
+                .map_err(|e| DecoderError::InitFail(e))?;
+        Ok(Self {
+            inner: decoder,
+            buf: vec![0u8; image_size.0 * image_size.1 * 3],
+        })
+    }
+}
+
+impl ImageDecoder for H264BGRDecoder {
+    fn decode(&mut self, data: &[u8]) -> Result<&[u8], DecoderError> {
+        let bb = Instant::now();
+        let a = self
+            .inner
+            .decode(&data)
+            .map_err(|e| DecoderError::DecodeFail(e))
+            .map(|o| o.ok_or(DecoderError::NoImageDecoded))?
+            .map(|i| {
+                let b = Instant::now();
+                let dim = i.dimensions_uv();
+                let strides = i.strides();
+                let wanted = dim.0 * dim.1 * 3;
+
+                for y in 0..dim.1 {
+                    for x in 0..dim.0 {
+                        let base_tgt = (y * dim.0 + x) * 3;
+                        let base_y = y * strides.0 + x;
+                        let base_u = (y / 2 * strides.1) + (x / 2);
+                        let base_v = (y / 2 * strides.2) + (x / 2);
+
+                        let rgb_pixel = &mut self.buf[base_tgt..base_tgt + 3];
+
+                        let y = i.y()[base_y] as f32;
+                        let u = i.u()[base_u] as f32;
+                        let v = i.v()[base_v] as f32;
+
+                        rgb_pixel[2] = (y + 1.402 * (v - 128.0)) as u8;
+                        rgb_pixel[1] = (y - 0.344 * (u - 128.0) - 0.714 * (v - 128.0)) as u8;
+                        rgb_pixel[0] = (y + 1.772 * (u - 128.0)) as u8;
+                    }
+                }
+
+                //                i.write_rgb8(&mut self.buf);
                 println!(
                     "Took {} ms to write into rgb",
                     Instant::now().duration_since(b).as_millis()
