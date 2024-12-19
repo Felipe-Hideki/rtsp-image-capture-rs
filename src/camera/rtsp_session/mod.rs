@@ -213,8 +213,8 @@ impl Debug for FrameRequest {
 
 #[derive(Debug)]
 pub struct FrameResponse {
-    frame: Vec<u8>,
-    i_frame_ts: Instant,
+    pub frame: Vec<u8>,
+    pub i_frame_ts: Instant,
 }
 
 pub struct SessionConfig {
