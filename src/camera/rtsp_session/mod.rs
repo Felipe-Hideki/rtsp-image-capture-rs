@@ -220,6 +220,7 @@ pub struct FrameResponse {
     pub i_frame_ts: Instant,
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct SessionConfig {
     pub buf_size: usize,
     pub frame_lifetime: Duration,
