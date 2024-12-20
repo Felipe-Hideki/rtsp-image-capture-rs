@@ -127,7 +127,10 @@ impl FrameHolder {
         index: usize,
     ) -> Result<&[u8], DecoderError> {
         if index >= self.raw_frames.len() {
-            return Err(DecoderError::IndexOutOfBounds);
+            return Err(DecoderError::IndexOutOfBounds(
+                self.raw_frames.len(),
+                self.ts.clone(),
+            ));
         }
         if self.decoded_frames.len() < index {
             self.decode(decoder, index - 1)?;
@@ -320,7 +323,7 @@ impl SessionWrapper {
                     match req.send(Some(SessionInstance::new(data_req_tx.clone()))) {
                         Ok(_) => {},
                         Err(_) => {
-                            println!("Failed to send data back")
+                            println!("Failed to send data requester back")
                         }
                     }
                 },

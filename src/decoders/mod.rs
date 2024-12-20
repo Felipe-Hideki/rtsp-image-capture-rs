@@ -13,7 +13,7 @@ pub enum DecoderError {
     NoImageDecoded,
     FieldOutOfBounds,
     NalOutOfBounds,
-    IndexOutOfBounds,
+    IndexOutOfBounds(usize, Instant),
 }
 
 // TODO: Cant decide between caching the buffer into each decoder, or just create the vec in
