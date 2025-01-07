@@ -160,6 +160,9 @@ impl FrameHolder {
     }
 
     fn add_image(&mut self, data: Vec<u8>) {
+        if self.is_empty() {
+            return;
+        }
         self.raw_frames.push(data)
     }
 
