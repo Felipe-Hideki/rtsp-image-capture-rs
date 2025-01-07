@@ -155,9 +155,8 @@ impl ImageDecoder for H264BGRDecoder {
             .map(|o| o.ok_or(DecoderError::NoImageDecoded))?
             .map(|i| {
                 let b = Instant::now();
-                let dim = i.dimensions_uv();
+                let dim = i.dimensions();
                 let strides = i.strides();
-                let wanted = dim.0 * dim.1 * 3;
 
                 for y in 0..dim.1 {
                     for x in 0..dim.0 {
