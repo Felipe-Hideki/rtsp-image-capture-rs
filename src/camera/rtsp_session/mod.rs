@@ -335,7 +335,6 @@ impl SessionWrapper {
                     match packet {
                         CodecItem::VideoFrame(f) => {
                             if f.is_random_access_point() {
-                                println!("Setting iframe");
                                 self.frame_holder.set_iframe(f.into_data());
                                 continue;
                             }
