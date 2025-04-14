@@ -1,15 +1,15 @@
-use std::time::Instant;
+use std::{error::Error, time::Instant};
 
 use openh264::{
-    decoder::{Decoder, DecoderConfig},
+    decoder::{Decoder as H264Decoder, DecoderConfig},
     formats::YUVSource,
     OpenH264API,
 };
 
 #[derive(Debug)]
 pub enum DecoderError {
-    InitFail(openh264::Error),
-    DecodeFail(openh264::Error),
+    InitFail(Box<dyn Error + Sync + Send>),
+    DecodeFail(Box<dyn Error + Sync + Send>),
     NoImageDecoded,
     FieldOutOfBounds,
     NalOutOfBounds,
@@ -88,15 +88,17 @@ impl<T: 'static + ImageDecoder> Chain<T> for AVCCDecoder {
 }
 
 pub struct H264RGBDecoder {
-    inner: Decoder,
+    inner: H264Decoder,
     buf: Vec<u8>,
 }
 
 impl H264RGBDecoder {
     pub fn new(dbg: bool, image_size: (usize, usize)) -> Result<Self, DecoderError> {
-        let decoder =
-            Decoder::with_api_config(OpenH264API::from_source(), DecoderConfig::new().debug(dbg))
-                .map_err(|e| DecoderError::InitFail(e))?;
+        let decoder = H264Decoder::with_api_config(
+            OpenH264API::from_source(),
+            DecoderConfig::new().debug(dbg),
+        )
+        .map_err(|e| DecoderError::InitFail(Box::new(e)))?;
         Ok(Self {
             inner: decoder,
             buf: vec![0u8; image_size.0 * image_size.1 * 3],
@@ -110,7 +112,7 @@ impl ImageDecoder for H264RGBDecoder {
         let a = self
             .inner
             .decode(&data)
-            .map_err(|e| DecoderError::DecodeFail(e))
+            .map_err(|e| DecoderError::DecodeFail(Box::new(e)))
             .map(|o| o.ok_or(DecoderError::NoImageDecoded))?
             .map(|i| {
                 let b = Instant::now();
@@ -129,15 +131,17 @@ impl ImageDecoder for H264RGBDecoder {
     }
 }
 pub struct H264BGRDecoder {
-    inner: Decoder,
+    inner: H264Decoder,
     buf: Vec<u8>,
 }
 
 impl H264BGRDecoder {
     pub fn new(dbg: bool, image_size: (usize, usize)) -> Result<Self, DecoderError> {
-        let decoder =
-            Decoder::with_api_config(OpenH264API::from_source(), DecoderConfig::new().debug(dbg))
-                .map_err(|e| DecoderError::InitFail(e))?;
+        let decoder = H264Decoder::with_api_config(
+            OpenH264API::from_source(),
+            DecoderConfig::new().debug(dbg),
+        )
+        .map_err(|e| DecoderError::InitFail(Box::new(e)))?;
         Ok(Self {
             inner: decoder,
             buf: vec![0u8; image_size.0 * image_size.1 * 3],
@@ -151,7 +155,7 @@ impl ImageDecoder for H264BGRDecoder {
         let a = self
             .inner
             .decode(&data)
-            .map_err(|e| DecoderError::DecodeFail(e))
+            .map_err(|e| DecoderError::DecodeFail(Box::new(e)))
             .map(|o| o.ok_or(DecoderError::NoImageDecoded))?
             .map(|i| {
                 let b = Instant::now();

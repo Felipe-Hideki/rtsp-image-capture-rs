@@ -97,7 +97,7 @@ async fn main() {
             Err(SessionError::BrokenPipeline) => {
                 panic!()
             }
-            Err(SessionError::DecodingError(DecoderError::IndexOutOfBounds)) => {
+            Err(SessionError::DecodingError(DecoderError::IndexOutOfBounds(x, y))) => {
                 println!("Waiting for decode!");
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;

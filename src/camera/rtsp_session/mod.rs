@@ -11,7 +11,7 @@ use retina::{
         Demuxed, InitialSequenceNumberPolicy, InitialTimestampPolicy, PlayOptions, Session,
         SessionOptions, SetupOptions, TcpTransportOptions, Transport,
     },
-    codec::{CodecItem, VideoFrame},
+    codec::CodecItem,
     Error,
 };
 use tokio::{sync, task::JoinHandle};
