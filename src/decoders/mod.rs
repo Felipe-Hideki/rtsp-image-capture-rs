@@ -12,7 +12,8 @@ pub enum DecoderError {
     DecodeFail(openh264::Error),
     NoImageDecoded,
     FieldOutOfBounds,
-    NalOutofBounds,
+    NalOutOfBounds,
+    IndexOutOfBounds(usize, Instant),
 }
 
 // TODO: Cant decide between caching the buffer into each decoder, or just create the vec in
@@ -57,7 +58,7 @@ impl ImageDecoder for AVCCDecoder {
             index += 4; // Skip the size field
 
             if index + nal_size > data.len() {
-                return Err(DecoderError::NalOutofBounds);
+                return Err(DecoderError::NalOutOfBounds);
             }
 
             // Extract the NAL unit
@@ -154,9 +155,8 @@ impl ImageDecoder for H264BGRDecoder {
             .map(|o| o.ok_or(DecoderError::NoImageDecoded))?
             .map(|i| {
                 let b = Instant::now();
-                let dim = i.dimensions_uv();
+                let dim = i.dimensions();
                 let strides = i.strides();
-                let wanted = dim.0 * dim.1 * 3;
 
                 for y in 0..dim.1 {
                     for x in 0..dim.0 {
