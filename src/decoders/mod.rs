@@ -211,11 +211,8 @@ pub struct ChainedDecoder {
 }
 
 impl ChainedDecoder {
-    pub fn new<T: 'static + ImageDecoder>(a: T, b: T) -> ChainedDecoder {
-        ChainedDecoder {
-            a: Box::new(a),
-            b: Box::new(b),
-        }
+    pub fn new(a: Box<dyn ImageDecoder>, b: Box<dyn ImageDecoder>) -> ChainedDecoder {
+        ChainedDecoder { a, b }
     }
 }
 
