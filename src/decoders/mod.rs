@@ -210,6 +210,15 @@ pub struct ChainedDecoder {
     b: Box<dyn ImageDecoder>,
 }
 
+impl ChainedDecoder {
+    pub fn new<T: 'static + ImageDecoder>(a: T, b: T) -> ChainedDecoder {
+        ChainedDecoder {
+            a: Box::new(a),
+            b: Box::new(b),
+        }
+    }
+}
+
 impl ImageDecoder for ChainedDecoder {
     fn decode(&mut self, data: &[u8]) -> Result<&[u8], DecoderError> {
         let b = Instant::now();
