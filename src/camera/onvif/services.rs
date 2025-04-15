@@ -1,8 +1,6 @@
+pub use onvif::schema;
 use onvif::{
-    schema::{
-        self,
-        onvif::{Profile, ReferenceToken, StreamType, Transport, TransportProtocol},
-    },
+    schema::onvif::{Profile, ReferenceToken, StreamType, Transport, TransportProtocol},
     soap::client::{Client, ClientBuilder, Credentials},
 };
 use url::Url;
