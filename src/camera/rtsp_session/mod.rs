@@ -1,4 +1,5 @@
 pub mod utils;
+pub use retina;
 
 use std::{
     fmt::Debug,
