@@ -1,6 +1,12 @@
 pub use onvif::schema;
 use onvif::{
-    schema::onvif::{Profile, ReferenceToken, StreamType, Transport, TransportProtocol},
+    schema::{
+        media::SetVideoEncoderConfiguration,
+        onvif::{
+            Profile, ReferenceToken, StreamType, Transport, TransportProtocol,
+            VideoEncoderConfiguration,
+        },
+    },
     soap::client::{Client, ClientBuilder, Credentials},
 };
 use url::Url;
@@ -65,6 +71,19 @@ impl MediaClient {
             .await
             .map_err(|e| OnvifError::TransportError(e))
             .map(|r| r.profiles)
+    }
+
+    pub async fn set_profile(&self, cfg: VideoEncoderConfiguration) -> Result<(), OnvifError> {
+        schema::media::set_video_encoder_configuration(
+            &self.inner,
+            &SetVideoEncoderConfiguration {
+                configuration: cfg,
+                force_persistence: true,
+            },
+        )
+        .await
+        .map_err(|e| OnvifError::TransportError(e))?;
+        Ok(())
     }
 
     pub async fn sync_iframe(&self) -> Result<(), OnvifError> {
