@@ -9,8 +9,8 @@ use std::{
 use futures::StreamExt;
 use retina::{
     client::{
-        Demuxed, InitialSequenceNumberPolicy, InitialTimestampPolicy, PlayOptions, Session,
-        SessionOptions, SetupOptions, TcpTransportOptions, Transport,
+        Credentials, Demuxed, InitialSequenceNumberPolicy, InitialTimestampPolicy, PlayOptions,
+        Session, SessionOptions, SetupOptions, TcpTransportOptions, Transport,
     },
     codec::CodecItem,
     Error,
@@ -235,6 +235,7 @@ pub struct SessionWrapper {
     frame_holder: FrameHolder,
     decoder: Box<dyn ImageDecoder + Sync + Send>,
     cfg: SessionConfig,
+    creds: Credentials,
 }
 
 impl SessionWrapper {
@@ -242,12 +243,14 @@ impl SessionWrapper {
         camera_url: Url,
         decoder: Box<dyn ImageDecoder + Sync + Send>,
         cfg: SessionConfig,
+        creds: Credentials,
     ) -> Self {
         Self {
             camera_url,
             frame_holder: FrameHolder::new(),
             decoder,
             cfg,
+            creds,
         }
     }
 
@@ -258,9 +261,12 @@ impl SessionWrapper {
     }
 
     async fn start_session(&self) -> Result<Demuxed, SessionError> {
-        let mut session = Session::describe(self.camera_url.clone(), SessionOptions::default())
-            .await
-            .map_err(|e| SessionError::FailedToDescribeSession(e))?;
+        let mut session = Session::describe(
+            self.camera_url.clone(),
+            SessionOptions::default().creds(Some(self.creds.clone())),
+        )
+        .await
+        .map_err(|e| SessionError::FailedToDescribeSession(e))?;
 
         let video_stream = session
             .streams()
